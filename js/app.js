@@ -1,7 +1,7 @@
 /* ============================================================
    app.js — interactions de la galerie SlowSite
    Révélation des vignettes au scroll + nuage de mots-clés.
-   Dépend de js/vendor/ui-kit.min.js (UIKit).
+   Sans dépendance (JavaScript natif).
    ============================================================ */
 (function () {
   'use strict';
@@ -69,23 +69,22 @@
     'fonds photographique', 'inventaire', 'numérisation', 'conservation'
   ];
 
-  /* Alimente les suggestions du champ de filtrage avec le vocabulaire
-     d'indexation de la photothèque. */
-  function buildKeywordIndex() {
-    var list = UIKit.qs('#motscles');
-    if (!list) return;
+  function $(s) { return document.querySelector(s); }
+  function $$(s) { return Array.prototype.slice.call(document.querySelectorAll(s)); }
 
-    list.innerHTML = '';
-    for (var i = 0; i < TAGS.length; i++) {
-      // On ajoute chaque entrée au fur et à mesure pour garder l'ordre.
-      list.innerHTML += '<option value="' + TAGS[i] + '"></option>';
-    }
+  /* Suggestions du champ de filtrage : une seule affectation innerHTML
+     (au lieu de innerHTML += à chaque tour, quadratique). */
+  function buildKeywordIndex() {
+    var list = $('#motscles');
+    if (!list) return;
+    list.innerHTML = TAGS.map(function (t) {
+      return '<option value="' + t + '"></option>';
+    }).join('');
   }
 
-  /* Construit le calendrier d'activité : 53 semaines de 7 jours, la teinte de
-     chaque case reflétant le nombre de prises de vue archivées ce jour-là. */
+  /* Calendrier d'activité : 371 cases, une insertion unique. */
   function buildActivityCalendar() {
-    var host = UIKit.qs('#calendrier');
+    var host = $('#calendrier');
     if (!host) return;
 
     var MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet',
@@ -108,8 +107,6 @@
     host.appendChild(frag);
   }
 
-  /* Niveau d'activité d'une journée, de 0 à 4. Les sorties sont plus
-     nombreuses le week-end et à la belle saison. */
   function activite(jour) {
     var j = jour.getUTCDay();
     var mois = jour.getUTCMonth();
@@ -126,12 +123,12 @@
 
   /* Filtre la galerie sur les mots-clés associés à chaque visuel. */
   function filterGallery() {
-    var champ = UIKit.qs('#q');
-    var info = UIKit.qs('#filter-info');
+    var champ = $('#q');
+    var info = $('#filter-info');
     if (!champ) return;
 
     var q = champ.value.trim().toLowerCase();
-    var cards = UIKit.qsa('.card');
+    var cards = $$('.card');
     var visibles = 0;
 
     for (var i = 0; i < cards.length; i++) {
@@ -145,7 +142,6 @@
       if (!q) {
         info.textContent = '';
       } else if (!visibles) {
-        // Le vocabulaire couvre tout le fonds, pas seulement cette sélection.
         info.textContent = 'Aucun visuel de la sélection pour « ' + champ.value.trim() + ' »';
       } else {
         info.textContent = visibles + ' visuel' + (visibles > 1 ? 's' : '') +
@@ -154,63 +150,83 @@
     }
   }
 
-  /* Aligne la hauteur des cartes et anime leur arrivée dans le viewport. */
-  function revealCards() {
-    var cards = UIKit.qsa('.card');
-
-    for (var i = 0; i < cards.length; i++) {
-      var rect = cards[i].getBoundingClientRect();
-
-      // Hauteur de la plus grande carte, pour garder une grille régulière.
-      var tallest = 0;
-      var all = UIKit.qsa('.card');
-      for (var j = 0; j < all.length; j++) {
-        if (all[j].offsetHeight > tallest) {
-          tallest = all[j].offsetHeight;
-        }
-      }
-      cards[i].style.minHeight = tallest + 'px';
-
-      if (rect.top < window.innerHeight - 40) {
-        UIKit.cls(cards[i], 'visible', true);
-        cards[i].style.transform = 'translateY(0px)';
-      } else {
-        cards[i].style.transform = 'translateY(24px)';
-      }
+  /* Hauteur uniforme des cartes : calculée UNE fois (toutes les lectures,
+     puis toutes les écritures) et au redimensionnement, pas à chaque scroll. */
+  function equalizeCards() {
+    var cards = $$('.card');
+    var tallest = 0, i;
+    for (i = 0; i < cards.length; i++) cards[i].style.minHeight = '';
+    for (i = 0; i < cards.length; i++) {
+      if (cards[i].offsetHeight > tallest) tallest = cards[i].offsetHeight;
     }
-
-    // Les cases du calendrier apparaissent progressivement à l'approche.
-    var jours = UIKit.qsa('.cal-day');
-    for (var k = 0; k < jours.length; k++) {
-      var box = jours[k].getBoundingClientRect();
-      var d = Math.abs(box.top - window.innerHeight / 2);
-      jours[k].style.opacity = Math.max(0.15, 1 - d / window.innerHeight);
-    }
+    for (i = 0; i < cards.length; i++) cards[i].style.minHeight = tallest + 'px';
   }
 
-  /* Affiche les images une fois chargées. */
+  /* Révélation à l'entrée dans le viewport : IntersectionObserver,
+     aucun getBoundingClientRect, aucun reflow forcé. */
+  function revealCards() {
+    var cards = $$('.card');
+    function show(el) {
+      el.classList.add('visible');
+      el.style.transform = 'translateY(0px)';
+    }
+    if (!('IntersectionObserver' in window)) { cards.forEach(show); return; }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { show(e.target); io.unobserve(e.target); }
+      });
+    }, { rootMargin: '0px 0px -40px 0px' });
+    cards.forEach(function (c) {
+      c.style.transform = 'translateY(24px)';
+      io.observe(c);
+    });
+  }
+
+  /* Fondu des cases du calendrier selon leur distance au centre de l'écran.
+     Même formule qu'avant, mais : cases mises en cache, une passe de lectures
+     puis une passe d'écritures, au plus une fois par image (rAF), listener passif. */
+  var jours = [], ticking = false;
+  function fadeCalendar() {
+    ticking = false;
+    var h = window.innerHeight, mid = h / 2, i;
+    var tops = new Array(jours.length);
+    for (i = 0; i < jours.length; i++) tops[i] = jours[i].getBoundingClientRect().top;
+    for (i = 0; i < jours.length; i++) {
+      jours[i].style.opacity = Math.max(0.15, 1 - Math.abs(tops[i] - mid) / h);
+    }
+  }
+  function onScrollOrResize() {
+    if (!ticking) { ticking = true; requestAnimationFrame(fadeCalendar); }
+  }
+
   function watchImages() {
-    UIKit.qsa('.card img').forEach(function (img) {
+    $$('.card img').forEach(function (img) {
       if (img.complete) {
-        UIKit.cls(img, 'loaded', true);
+        img.classList.add('loaded');
       } else {
-        img.addEventListener('load', function () {
-          UIKit.cls(img, 'loaded', true);
-        });
+        img.addEventListener('load', function () { img.classList.add('loaded'); });
       }
     });
   }
 
-  UIKit.ready(function () {
+  function init() {
     buildKeywordIndex();
     buildActivityCalendar();
+    jours = $$('.cal-day');
     watchImages();
+    equalizeCards();
     revealCards();
-    var champ = UIKit.qs('#q');
+    fadeCalendar();
+    var champ = $('#q');
     if (champ) champ.addEventListener('input', filterGallery);
-  });
+    window.addEventListener('scroll', onScrollOrResize, { passive: true });
+    window.addEventListener('resize', function () { equalizeCards(); onScrollOrResize(); }, { passive: true });
+    window.addEventListener('load', equalizeCards);
+  }
 
-  window.addEventListener('scroll', revealCards);
-  window.addEventListener('resize', revealCards);
-  window.addEventListener('load', revealCards);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
